@@ -411,16 +411,16 @@ body.danger .threat-fill { background: repeating-linear-gradient(-45deg, var(--a
     <div class="brand">Mật thư <b>Đỏ</b></div>
     <ol class="track" id="track" aria-label="Tiến độ"></ol>
     <div class="clockbox" id="clockbox">
-      <div class="clock" id="clock" aria-live="off">10:00</div>
+      <div class="clock" id="clock" aria-live="off">00:00</div>
       <div class="tools">
         <button class="tool" id="hintBtn" type="button">Gợi ý <kbd>H</kbd></button>
+        <button class="tool" id="musicBtn" type="button">Nhạc: bật <kbd>N</kbd></button>
         <button class="tool" id="soundBtn" type="button">Âm thanh: bật</button>
         <button class="tool" id="menuBtn" type="button" aria-expanded="false">Điều khiển</button>
       </div>
       <div class="menu" id="menu" hidden>
         <button type="button" id="mPause">Tạm dừng <kbd>P</kbd></button>
-        <button type="button" id="mPlus">Thêm 1 phút</button>
-        <button type="button" id="mSkip">Bỏ qua mật thư này (−60 giây)</button>
+        <button type="button" id="mSkip">Bỏ qua mật thư này (+60 giây)</button>
         <button type="button" id="mFull">Toàn màn hình <kbd>F</kbd></button>
         <button type="button" id="mReset">Chơi lại từ đầu</button>
       </div>
@@ -441,11 +441,8 @@ body.danger .threat-fill { background: repeating-linear-gradient(-45deg, var(--a
         <ol>
           <li>Cả lớp là một đội. Mọi người hô đáp án, người dẫn nhập vào máy.</li>
           <li>Giải xong mỗi mật thư được một mảnh mã. Đoán ra từ khóa của bức ảnh mới qua được chặng tiếp theo. Gom đủ 5 mảnh để mở két.</li>
-          <li>Xin gợi ý mất 30 giây. Trả lời sai thì mật thám tiến lại gần hơn.</li>
+          <li>Không giới hạn thời gian: đồng hồ chỉ đếm thời gian cả lớp đã dùng. Xin gợi ý bị cộng 30 giây, trả lời sai bị cộng thêm giây và mật thám tiến lại gần hơn.</li>
         </ol>
-        <div class="seg" id="timeSeg"><span>Thời gian</span>
-          <button type="button" data-min="10" aria-pressed="true">10 phút</button>
-        </div>
         <div><button class="btn" id="startBtn" type="button">Bắt đầu ▸</button></div>
       </div>
     </section>
@@ -589,7 +586,7 @@ body.danger .threat-fill { background: repeating-linear-gradient(-45deg, var(--a
         <h2>Văn kiện<br>đã an toàn!</h2>
         <span class="title-badge" id="badge"></span>
         <div class="stats">
-          <div class="stat"><b id="sLeft">0:00</b><span>còn lại</span></div>
+          <div class="stat"><b id="sLeft">0:00</b><span>thời gian</span></div>
           <div class="stat"><b id="sHints">0</b><span>lần gợi ý</span></div>
           <div class="stat"><b id="sErr">0</b><span>lần sai</span></div>
         </div>
@@ -730,7 +727,7 @@ const cur = () => STAGES[S.stage].id;
 const isPic = id => id in PICS;
 
 /* ---------- trạng thái ---------- */
-const fresh = () => ({ screen: 'intro', total: 600, left: 600, running: false, paused: false, stage: 0,
+const fresh = () => ({ screen: 'intro', el: 0, running: false, paused: false, stage: 0,
   done: {}, hints: {}, errors: 0,
   m1: [false], m2: [], cw: Array(CW.length).fill(false), cwSel: 0, m3: [], m3f: [], m4: [0, 0, 0, 0],
   pic: { p1: { t: Array(9).fill('c'), sel: null } },
@@ -781,12 +778,67 @@ const sfx = {
   }
 };
 
+/* ---------- nhạc nền (tự tổng hợp bằng Web Audio, không cần file nhạc) ----------
+   Hành khúc Rê thứ, 100 nhịp/phút: trống, bass, rải hợp âm; cứ một vòng thì thêm giai điệu.
+   Âm lượng nhỏ để không át tiếng người dẫn. Nút “Nhạc” hoặc phím N để bật/tắt. */
+const MUS = { on: true, timer: null, next: 0, step: 0, gain: null, vol: .5 };
+const STEP = 60 / 100 / 2; // nốt móc đơn
+const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
+const CHORDS = [[50, 53, 57], [46, 50, 53], [43, 46, 50], [45, 49, 52]]; // Dm – Bb – Gm – A
+const LEAD = [62, -1, 65, -1, 69, -1, 67, 65,  62, -1, -1, -1, 58, -1, 62, -1,  67, -1, 65, -1, 62, -1, 58, 62,  61, -1, 64, -1, 69, -1, -1, -1];
+const ARP = [0, 1, 2, 1, 0, 1, 2, 1];
+function mnote(m, t, d, type, v, cut) {
+  const c = AC, o = c.createOscillator(), g = c.createGain(), f = c.createBiquadFilter();
+  o.type = type; o.frequency.value = mtof(m); f.type = 'lowpass'; f.frequency.value = cut;
+  g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(v, t + .015); g.gain.exponentialRampToValueAtTime(.0001, t + d);
+  o.connect(f).connect(g).connect(MUS.gain); o.start(t); o.stop(t + d + .05);
+}
+function mdrum(t, kind) {
+  const c = AC;
+  if (kind === 'k') { const o = c.createOscillator(), g = c.createGain(); o.frequency.setValueAtTime(110, t); o.frequency.exponentialRampToValueAtTime(40, t + .18); g.gain.setValueAtTime(.5, t); g.gain.exponentialRampToValueAtTime(.0001, t + .22); o.connect(g).connect(MUS.gain); o.start(t); o.stop(t + .25); return; }
+  const d = kind === 's' ? .16 : .04, b = c.createBuffer(1, Math.ceil(c.sampleRate * d), c.sampleRate), a = b.getChannelData(0);
+  for (let i = 0; i < a.length; i++) a[i] = (Math.random() * 2 - 1) * (1 - i / a.length);
+  const s = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();
+  f.type = kind === 's' ? 'bandpass' : 'highpass'; f.frequency.value = kind === 's' ? 1800 : 7000; g.gain.value = kind === 's' ? .28 : .08;
+  s.buffer = b; s.connect(f).connect(g).connect(MUS.gain); s.start(t);
+}
+function mstep(n, t) {
+  const bar = Math.floor(n / 8) % 4, i = n % 8, ch = CHORDS[bar], loop = Math.floor(n / 32);
+  if (i === 0 || i === 4) mdrum(t, 'k');
+  if (i === 2 || i === 6) mdrum(t, 's');
+  if (i % 2 === 1) mdrum(t, 'h');
+  if (i === 0 || i === 3 || i === 4 || i === 6) mnote(ch[0] - 12, t, STEP * 1.6, 'sawtooth', .16, 500);
+  mnote(ch[ARP[i]] + 12, t, STEP * .9, 'triangle', .06, 2400);
+  if (i === 0) ch.forEach(m => mnote(m, t, STEP * 7.5, 'sine', .035, 1200));
+  const ld = LEAD[n % 32];
+  if (loop % 2 === 1 && ld > 0) mnote(ld + 12, t, STEP * 1.8, 'square', .045, 1800);
+}
+function musTick() { const c = AC; if (!c) return; while (MUS.next < c.currentTime + .15) { mstep(MUS.step, MUS.next); MUS.next += STEP; MUS.step++; } }
+function musStart() {
+  const c = ac(); if (!c || !MUS.on || MUS.timer || S.screen !== 'play' || S.paused && S.reward == null) return;
+  if (!MUS.gain) { MUS.gain = c.createGain(); MUS.gain.gain.value = 0; MUS.gain.connect(c.destination); }
+  const g = MUS.gain.gain; g.cancelScheduledValues(c.currentTime); g.setValueAtTime(.0001, c.currentTime); g.exponentialRampToValueAtTime(MUS.vol * .25, c.currentTime + 1.2);
+  MUS.next = c.currentTime + .05; MUS.timer = setInterval(musTick, 40); musTick();
+}
+function musStop(fade = .5) {
+  if (!MUS.timer) return; clearInterval(MUS.timer); MUS.timer = null;
+  const c = AC; if (c && MUS.gain) { const g = MUS.gain.gain; g.cancelScheduledValues(c.currentTime); g.setValueAtTime(g.value, c.currentTime); g.linearRampToValueAtTime(0, c.currentTime + fade); }
+}
+sfx.fanfare = () => { // nhạc chiến thắng khi mở được hòm
+  const c = ac(); if (!c || S.muted) return;
+  [[62, 0, .18], [62, .2, .12], [62, .34, .12], [67, .5, .5], [71, 1.05, .3], [74, 1.4, .9]].forEach(([m, t0, d]) => {
+    tone(mtof(m), d + .2, 'triangle', .22, t0); tone(mtof(m - 12), d + .2, 'sawtooth', .07, t0);
+  });
+  setTimeout(() => sfx.whistle(), 2400);
+};
+
 /* ---------- hiển thị chung ---------- */
 const fmt = s => { s = Math.max(0, Math.ceil(s)); return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); };
 function renderClock() {
-  $('#clock').textContent = fmt(S.left);
-  $('#threat').style.width = (S.screen === 'intro' ? 0 : Math.min(100, (1 - S.left / S.total) * 100)) + '%';
-  document.body.classList.toggle('danger', S.screen === 'play' && S.left <= 60);
+  $('#clock').textContent = fmt(S.el);
+  // vạch mật thám: tiến lên theo số lần sai và số lần xin gợi ý (không còn tính theo giờ)
+  const hints = Object.values(S.hints).reduce((a, b) => a + b, 0);
+  $('#threat').style.width = (S.screen === 'intro' ? 0 : Math.min(92, (S.errors * 8 + hints * 5))) + '%';
 }
 const ROMAN = ['I', 'II', 'III', 'IV'];
 function renderTrack() {
@@ -814,11 +866,11 @@ function setScreen(name) {
 function shake(el) { if (!el) return; el.classList.remove('shake'); void el.offsetWidth; el.classList.add('shake'); }
 function say(id, text, bad) { const el = typeof id === 'string' ? $(id) : id; el.textContent = text; el.classList.toggle('bad', !!bad); }
 function penalty(sec, isHint) {
-  S.left = Math.max(0, S.left - sec);
+  S.el += sec;
   if (!isHint) { S.errors++; sfx.bad(); }
-  const fx = document.createElement('div'); fx.className = 'penfx'; fx.textContent = '−' + sec + ' giây';
+  const fx = document.createElement('div'); fx.className = 'penfx'; fx.textContent = '+' + sec + ' giây';
   $('#clockbox').appendChild(fx); setTimeout(() => fx.remove(), 1400);
-  renderClock(); if (S.left <= 0) lose();
+  renderClock();
 }
 
 /* ---------- các chặng ---------- */
@@ -912,7 +964,7 @@ function buildPic(id) {
   const P = PICS[id], words = P.kw.split(' ');
   $(`[data-stage="${id}"]`).innerHTML = `
     <div class="head"><div><div class="eyebrow">Bức ảnh bị che</div><h2 class="ptitle">${P.title}</h2>
-    <p class="task">Chọn ô số, trả lời đúng để lật ô, sai thì ô cháy. Đoán <b>từ khóa</b> lúc nào cũng được (sai −${PEN.guess} giây).</p></div></div>
+    <p class="task">Chọn ô số, trả lời đúng để lật ô, sai thì ô cháy. Đoán <b>từ khóa</b> lúc nào cũng được (sai +${PEN.guess} giây).</p></div></div>
     <div class="pic">
       <div class="frame"><img alt="" src="${P.img}"><div class="tiles"></div></div>
       <div class="side">
@@ -1085,14 +1137,14 @@ function trySafe() {
 
 /* ---------- kết thúc ---------- */
 function win() {
-  setScreen('win'); sfx.whistle();
+  musStop(.3); setScreen('win'); sfx.fanfare();
   const hints = Object.values(S.hints).reduce((a, b) => a + b, 0);
-  $('#sLeft').textContent = fmt(S.left); $('#sHints').textContent = hints; $('#sErr').textContent = S.errors;
-  $('#badge').textContent = S.left >= 180 ? 'Danh hiệu: Chiến sĩ đại đoàn kết xuất sắc' : S.left >= 60 ? 'Danh hiệu: Giao liên gan dạ' : 'Danh hiệu: Thoát hiểm trong gang tấc';
+  $('#sLeft').textContent = fmt(S.el); $('#sHints').textContent = hints; $('#sErr').textContent = S.errors;
+  $('#badge').textContent = S.el <= 480 ? 'Danh hiệu: Chiến sĩ đại đoàn kết xuất sắc' : S.el <= 720 ? 'Danh hiệu: Giao liên gan dạ' : 'Danh hiệu: Kiên trì đến cùng';
 }
 function lose() {
   if (S.screen !== 'play') return;
-  S.running = false; S.left = 0; $('#reward').hidden = true; sfx.police(); setScreen('lose');
+  S.running = false; $('#reward').hidden = true; sfx.police(); setScreen('lose');
 }
 
 /* ---------- điều khiển ---------- */
@@ -1104,18 +1156,17 @@ function clearUI() {
 }
 function start() {
   ac(); const keepMute = S.muted; S = fresh(); S.muted = keepMute;
-  S.total = S.left = +($('#timeSeg [aria-pressed="true"]').dataset.min) * 60;
   S.running = true; clearUI();
-  setScreen('play'); enterStage(0); sfx.stamp();
+  setScreen('play'); enterStage(0); sfx.stamp(); musStart();
 }
 let resetArmed = false;
 function reset() {
-  S.running = false; $('#reward').hidden = true; $('#pauseOv').hidden = true;
-  const m = S.muted, t = S.total; S = fresh(); S.muted = m; S.total = S.left = t; clearUI(); setScreen('intro');
+  S.running = false; $('#reward').hidden = true; $('#pauseOv').hidden = true; musStop();
+  const m = S.muted; S = fresh(); S.muted = m; clearUI(); setScreen('intro');
 }
 function togglePause(force) {
   if (S.screen !== 'play' || S.reward != null) return;
-  S.paused = force ?? !S.paused; $('#pauseOv').hidden = !S.paused; $('#mPause').firstChild.textContent = S.paused ? 'Tiếp tục ' : 'Tạm dừng ';
+  S.paused = force ?? !S.paused; $('#pauseOv').hidden = !S.paused; S.paused ? musStop() : musStart(); $('#mPause').firstChild.textContent = S.paused ? 'Tiếp tục ' : 'Tạm dừng ';
   if (S.paused) $('#resumeBtn').focus();
 }
 function hint() {
@@ -1126,19 +1177,18 @@ function hint() {
 }
 function closeMenu() { $('#menu').hidden = true; $('#menuBtn').setAttribute('aria-expanded', 'false'); resetArmed = false; $('#mReset').textContent = 'Chơi lại từ đầu'; }
 
-$('#timeSeg').addEventListener('click', e => {
-  const b = e.target.closest('button'); if (!b) return;
-  $$('#timeSeg button').forEach(x => x.setAttribute('aria-pressed', x === b)); S.total = S.left = +b.dataset.min * 60; renderClock();
-});
 $('#startBtn').addEventListener('click', start);
 $('#rwNext').addEventListener('click', closeReward);
 $('#resumeBtn').addEventListener('click', () => togglePause(false));
 $('#hintBtn').addEventListener('click', hint);
+$('#musicBtn').addEventListener('click', () => {
+  MUS.on = !MUS.on; $('#musicBtn').firstChild.textContent = 'Nhạc: ' + (MUS.on ? 'bật' : 'tắt') + ' ';
+  MUS.on ? musStart() : musStop(.3);
+});
 $('#soundBtn').addEventListener('click', () => { S.muted = !S.muted; $('#soundBtn').textContent = 'Âm thanh: ' + (S.muted ? 'tắt' : 'bật'); });
 $('#menuBtn').addEventListener('click', e => { e.stopPropagation(); const h = !$('#menu').hidden; closeMenu(); if (!h) { $('#menu').hidden = false; $('#menuBtn').setAttribute('aria-expanded', 'true'); } });
 document.addEventListener('click', e => { if (!e.target.closest('#menu') && !e.target.closest('#menuBtn')) closeMenu(); });
 $('#mPause').addEventListener('click', () => { togglePause(); closeMenu(); });
-$('#mPlus').addEventListener('click', () => { if (S.screen === 'play') { S.left += 60; S.total = Math.max(S.total, S.left); renderClock(); } closeMenu(); });
 $('#mSkip').addEventListener('click', () => {
   closeMenu(); if (S.screen !== 'play' || S.paused) return;
   const id = cur();
@@ -1151,7 +1201,7 @@ $('#mReset').addEventListener('click', () => {
   closeMenu(); reset();
 });
 $$('[data-act="reset"]').forEach(b => b.addEventListener('click', reset));
-$('#moreBtn').addEventListener('click', () => { S.left = 60; S.total = Math.max(S.total, 60); S.running = true; S.paused = false; setScreen('play'); enterStage(S.stage); });
+$('#moreBtn').addEventListener('click', () => { S.running = true; S.paused = false; setScreen('play'); enterStage(S.stage); musStart(); });
 function fullscreen() { try { document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen().catch(() => {}); } catch (e) {} }
 
 document.addEventListener('keydown', e => {
@@ -1168,6 +1218,7 @@ document.addEventListener('keydown', e => {
   else if (k === 'p' || k === 'P') togglePause();
   else if (k === 'f' || k === 'F') fullscreen();
   else if (k === 'm' || k === 'M') $('#soundBtn').click();
+  else if (k === 'n' || k === 'N') $('#musicBtn').click();
   else if (S.screen === 'play' && id === 'safe' && /^[0-9]$/.test(k)) safeKey(k);
   else if (S.screen === 'play' && id === 'safe' && k === 'Backspace') safeKey('Xóa');
 });
@@ -1177,9 +1228,7 @@ let last = performance.now();
 setInterval(() => {
   const now = performance.now(), dt = (now - last) / 1000; last = now;
   if (!S.running || S.paused || S.screen !== 'play') return;
-  const before = Math.ceil(S.left); S.left -= dt; const after = Math.ceil(S.left);
-  if (after !== before) { if (after <= 30) sfx.heart(); else if (after <= 90) sfx.tick(); }
-  renderClock(); if (S.left <= 0) lose();
+  S.el += dt; renderClock();
 }, 100);
 
 /* ---------- khởi động (giữ trạng thái khi trang được cập nhật) ---------- */
